@@ -10,14 +10,7 @@ This repo contains the R Markdown script and the outputs for the practical sessi
 ### Datasets:
 The example OTU and taxonomy tables are available here: <https://zenodo.org/records/7235995>, while the contextual data is here: <https://zenodo.org/records/7229815>.
 
-  * **TARA-Oceans_18S-V4_Swarm-Mumu_table.tsv**: this dcodes used to create the figures and run the analysis conducted throughout the main text of the manuscript
-  * **TARA-Oceans_18S-V4_Swarm-Mumu_taxo.tsv**: codes used to create the figures and run the analysis used in the supplementary material of the manuscript
-  * **context_general.tsv**: codes used to create the figures and run the analysis used in the supplementary material of the manuscript
-  * **context_stat.tsv**: codes used to create the figures and run the analysis used in the supplementary material of the manuscript
-
-### Raw datasets:
-  * **spatial_dataset.csv**: raw spatial dataset used in this manuscript
-  * **seasonal_dataset.csv**: raw seasonal dataset used in this manucript
-  * **mean_data.csv**: mean values of the seasonal dataset used in the supplementary material of this manuscript
-  * **surf_bottom_sup_mat.csv**: surface and bottom seasonal pCO2 values from Gargalheiras and Cruzeta reservoirs used in the supplementary material of this manuscript
-  
+  * **TARA-Oceans_18S-V4_Swarm-Mumu_table.tsv**: OTU table
+  * **TARA-Oceans_18S-V4_Swarm-Mumu_taxo.tsv**: taxonomy of the OTU table
+  * **context_general.tsv**: *Tara Oceans* contextual data
+  * **context_stat.tsv**: *Tara Oceans* environmental data
