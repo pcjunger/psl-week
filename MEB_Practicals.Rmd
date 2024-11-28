@@ -1,0 +1,1137 @@
+---
+title: "Exploring planktonic communities in the Tara Ocean \n\n Practical Session"
+author: "Pedro C. Junger"
+date: "2024-11-28"
+subtitle: "PSL-Week: Marine Ecology & Biodiversity"
+---
+
+# 1. Welcome
+
+Welcome to the practical session of the Marine Ecology & Biodiversity course as part of the PSL-Week. The aim of this tutorial is providing the students a toolbox to explore the *Tara Oceans* datasets to study plankton diversity in the global ocean. The example dataset is the *Tara Oceans* 18SV4 data processed by the swarm pipeline, but the current script should be easily adaptable to other datasets.
+
+# 2. Loading required libraries
+
+The tutorial assumes that you have already installed R and Rstudio as well as Rmarkdown. You will then need the following core packages: *tidyverse* and *vegan*. *Tidyverse* is a collection of R packages (e.g., *dada2*, *dplyr*, *tidyr*, *tibble*, etc) designed for data science. *Vegan* is a community ecology package for analyses of ordination, diversity and dissimilarities. Then you have several secondary packages that are activated for different steps of this tutorial, as briefly described in the comments of the code below.
+
+```{r eval=FALSE, include=FALSE}
+
+# Libraries
+library(tidyverse) # collection of R packages designed for data science
+library(vegan)  # Community ecology package for analyses of ordination, diversity and dissimilarities
+library(parallel) # Base R library that enables multi-core processing
+library(phyloseq) # package to plot taxonomy composition
+library(scales) # additional plotting options
+library(stats) # built-in package with functions to perform statistical calculations
+library(ape) # package for phylogenetic analyses
+library(ggcorrplot) #library for visualization of correlation matrices using ggplo2
+library(RColorBrewer) #library to create nice looking color palettes
+```
+
+# 3. Data input & checking
+
+The aim here is importing and checking the structure of the data we are using during this tutorial:
+
+- an OTU table 
+- a taxonomy table
+- the Tara Oceans' contextual & environmental data
+
+The example OTU and taxonomy tables are available here: <https://zenodo.org/records/7235995>, while the contextual data is here: <https://zenodo.org/records/7229815>.
+
+```{r load data}
+# Your working directory must contain the OTU & taxonomy tables + the contextual files
+#setwd("/your_working_directory/") 
+
+# Open the OTU table
+otus<-read.table("datasets/TARA-Oceans_18S-V4_Swarm-Mumu_table.tsv",header = T)
+# Open taxonomy table
+taxo<-read.table("datasets/TARA-Oceans_18S-V4_Swarm-Mumu_taxo.tsv",header = T)
+# Open contextual & environmental data
+context<-read.table("datasets/context_general.tsv",header = T,sep = "\t")
+env<-read.table("datasets/context_stat.tsv",header = T,sep = "\t")
+
+#checking all dataframes
+otus; taxo; context; env #checking structure & dimensions
+
+```
+
+* What is the structure of the dataframes? What are the rows and columns?
+
+* What is the common information between dataframes?
+
+## 3.1. Accounting for unclassified sequences
+
+Some OTUs sequences in the taxonomy table are unclassified at the root as the classifier did not find any hits (similarity = 0) with the reference database. That means we can't ensure these sequences belong to Eukaryota. These cases are labeled as 'No_hit' in the taxonomy column. First, let's account for these sequences.
+
+```{r, include=T, eval=F}
+#sub-setting the unclassified sequences in the taxonomy table
+no_hits <- subset(taxo, grepl("No_hit", taxo$closest_hits_lca))
+#checking structure and dimension
+no_hits
+#counting the number of unclassified OTUs and reads
+nrow(no_hits) # n of unclassified OTUs
+nrow(no_hits)/nrow(taxo)*100 # % of unclassified OTUs
+sum(no_hits$abundance) # n of reads
+sum(no_hits$abundance)/sum(taxo$abundance)*100 # % of reads
+```
+
+* There are 6,605 unclassified OTUs, which represents around 9% of the total number of OTUs in the dataset (n=72501).
+
+* However, these OTUs account for 581,689 reads, which is only 0.11% of the total reads (525,698,813).
+
+* That means we can remove these OTUS while keeping 99.89 % of the total reads.
+
+
+## 3.2. Removing unclassified sequences
+
+After accounting for the unclassified OTUs, you are now going to remove them from the tables.
+
+```{r, include=T, eval=F}
+#removing the unclassified sequences from the taxonomy table
+taxo_2 <- subset(taxo, !grepl("No_hit", taxo$closest_hits_lca))
+#removing the unclassified sequences from the otu table
+otus_2<- otus[otus$amplicon %in% taxo_2$amplicon,]
+#amplicon ids as row names
+OTU_tab<-otus_2 %>% remove_rownames() %>% column_to_rownames("amplicon") 
+#obtaining the list of samples
+samples_list <- colnames(OTU_tab)[grep("TARA_", colnames(OTU_tab))] 
+
+#checking structure and dimension
+taxo_2; OTU_tab
+#counting the number OTUs and reads left in the table
+nrow(taxo_2) # n of unclassified OTUs
+nrow(taxo_2)/nrow(taxo)*100 # % of unclassified OTUs
+sum(taxo_2$abundance) # n of reads
+sum(taxo_2$abundance)/sum(taxo$abundance)*100 # % of reads
+```
+
+* You have now a table with 65,896 OTUs (90% of total), and 525,117,124 reads (99% of total).
+
+## 3.3. Keeping only protists
+
+You are now going to remove all Opisthokonta (Metazoans, Fungi & Choanoflagellata) and Rhodophyta from the tables to keep only protists, as explained in the introductory slides of this course.
+
+```{r, include=T, eval=F}
+#removing non-protist sequences from the taxonomy table
+taxo_tab <- subset(taxo_2, !grepl("Opisthokonta",taxo_2$closest_hits_lca))
+taxo_tab <- subset(taxo_tab, !grepl("Rhodophyta",taxo_tab$closest_hits_lca))
+#removing these sequences from the otu table
+otus_3<- otus[otus$amplicon %in% taxo_tab$amplicon,]
+#amplicon ids as row names
+OTU_tab<-otus_3 %>% remove_rownames() %>% column_to_rownames("amplicon") 
+#obtaining the list of samples
+samples_list <- colnames(OTU_tab)[grep("TARA_", colnames(OTU_tab))] 
+
+#checking structure and dimension
+taxo_tab; OTU_tab
+#counting the number OTUs and reads left in the table
+nrow(taxo_tab) # n of unclassified OTUs
+nrow(taxo_tab)/nrow(taxo)*100 # % of unclassified OTUs
+sum(taxo_tab$abundance) # n of reads
+sum(taxo_tab$abundance)/sum(taxo$abundance)*100 # % of reads
+```
+
+* You have now a final protist table with 54,846 OTUs (76% of total), and 348,774,399 reads (66% of total).
+
+# 4. Rarefaction curves and conversion in relative abundances
+
+The objective of this step is assessing the completeness of the dataset using rarefaction curves. Then, you will convert OTU read numbers into relative abundances per sample to perform all diversity analyses. Alternatively, you can choose to rarefy your dataset.
+
+## 4.1. Preparing file to plot rarefaction curves at the sample level
+
+This code generates a table with the OTU richness per number of reads per sample. The code uses the *parallel* package that enables multi-core processing to speed up the job. Yet, it takes some minutes because the dataset is large. Therefore, we are skipping this step here to save some time. You can use the already processed table to plot the rarefaction curves per samples in the next step.
+
+```{r, include=T, eval=F}
+## Preparing file to plot rarefaction curves at the sample level
+
+#Preparing objects for loop
+max_nb_reds <- max(colSums(OTU_tab[, samples_list]))
+table_raref <- c() # Mean OTU richness
+#list_OTUs <- rownames(OTU_tab) # List of OTUs
+samples_list <- colnames(OTU_tab)[grep("TARA_", colnames(OTU_tab))] 
+
+# Detect the number of available cores
+num_cores <- detectCores() - 1  # Leave one core free for system processes
+# Set up a cluster
+cl <- makeCluster(num_cores)
+
+rarefaction_function <- function(params, OTU_tab) {
+  sample <- params[1]
+  nb_reads <- as.numeric(params[2])
+  
+  if (sum(OTU_tab[, sample]) > nb_reads) {
+    # Subsample 10 times for this number of reads
+    subsampled_counts <- replicate(
+      10,
+      {
+        sampled_OTUs <- sample(
+          x = rownames(OTU_tab),
+          size = nb_reads,
+          prob = OTU_tab[, sample],
+          replace = TRUE
+        )
+        length(unique(sampled_OTUs))  # Count unique OTUs
+      }
+    )
+    avg_OTUs <- mean(subsampled_counts)  # Average across 10 replicates
+    return(data.frame(sample = sample, number_reads = nb_reads, OTU_richness = avg_OTUs))
+  } else {
+    return(NULL)
+  }
+}
+
+# Create all combinations of sample and number of reads
+all_combinations <- expand.grid(
+  sample = samples_list,
+  nb_reads = seq(2500, max_nb_reds, 2500)
+)
+
+# Export necessary data and functions to the cluster
+clusterExport(cl, c("OTU_tab", "rarefaction_function"))
+
+# Perform the rarefaction in parallel
+results <- parLapply(
+  cl,
+  X = split(all_combinations, seq_len(nrow(all_combinations))),
+  fun = function(params) rarefaction_function(unlist(params), OTU_tab)
+)
+
+# Stop the cluster after computation
+stopCluster(cl)
+
+# Combine results into a data frame
+table_raref <- do.call(rbind, results)
+# Convert data types
+table_raref$number_reads <- as.numeric(as.character(table_raref$number_reads))
+table_raref$OTU_richness <- as.numeric(as.character(table_raref$OTU_richness))
+
+write.table(table_raref, "outputs/tab_raref_curves.csv", sep=";", row.names=FALSE, quote=FALSE)
+
+#checking new table
+print(table_raref)
+```
+
+
+## 4.2. Plot and save figure with rarefaction curves per sample
+
+This code opens the file 'tab_raref_curves.csv' generated in the previous step, and then it plots the rarefaction curves per sample.
+
+```{r, include=T, eval=F}
+#open pre-processed table for rarefaction curves
+table_raref<-read.csv2("outputs/tab_raref_curves.csv", header = TRUE)
+table_raref$number_reads <- as.numeric(as.character(table_raref$number_reads)) #make sure number of reads is a numeric variable
+table_raref$OTU_richness <- as.numeric(as.character(table_raref$OTU_richness)) #make sure number OTUs is a numeric variable
+
+# Plot and save figure
+pdf(paste0("outputs/plots/Rarefaction_curves.pdf"), width=7, height= 4)
+ggplot(table_raref, aes(x = number_reads, y = OTU_richness, color = sample)) +
+  geom_line(linewidth = 0.5,alpha = 0.8) +
+  theme_classic() +
+  labs(y="OTU richness", x="Number of reads") +
+  theme(legend.position = "none", legend.title = element_text(size = 10)) +
+  guides(color = guide_legend(ncol = 2))
+
+dev.off()
+
+```
+
+* What can we conclude from this plot?
+
+## 4.3. Convert the number of reads into relative abundances
+
+As evidenced by the rarefaction curves, the sequencing effort varies between samples. That means we need to normalize the dataset before comparing the composition and diversity between samples.
+
+This code converts OTU read numbers into relative abundances per sample. Then, it also applies a minimum threshold to consider an OTU as truly present (e.g. 0.1%), which is handy for some steps of this tutorial due to the large size of the dataset.
+
+```{r, include=T, eval=F}
+#creating object to fill with relative abundances
+OTU_tab_ra<- OTU_tab
+# Make a loop to perform the job while keeping all columns
+for (sample in samples_list){
+  
+  # Compute relative abundance
+  OTU_tab_ra[,sample] <- OTU_tab_ra[,sample]/sum(OTU_tab_ra[,sample])
+  
+}
+
+#moving amplicon names from rownames to column
+OTU_tab_ra<-OTU_tab_ra %>% rownames_to_column("amplicon")
+# Write the clean OTU table with relative abundances for diversity analyses
+write.table(OTU_tab_ra, "outputs/OTUtab_protists_ra.csv", 
+            sep=";", row.names=FALSE, quote=FALSE)
+
+#check out table
+print(OTU_tab_ra) #54,846 OTUs 
+
+#creating object to fill with relative abundances
+OTU_tab_ra_2 <- OTU_tab_ra
+# Make a loop to perform the job
+for (sample in samples_list){
+  
+  # Apply a minimum threshold to consider an OTU as truly present (e.g. 0.1%)
+  OTU_tab_ra_2[which(OTU_tab_ra_2[,sample]<0.001), sample] <- 0
+  
+  # Compute relative abundance again after filtering
+  OTU_tab_ra_2[,sample] <- OTU_tab_ra_2[,sample]/sum(OTU_tab_ra_2[,sample])
+}
+
+# Keep only OTUs that are still present
+OTU_tab_ra_2 <- OTU_tab_ra_2[rowSums(OTU_tab_ra_2[samples_list])>0,] #57020 OTUs were removed
+
+# Write the clean OTU table with relative abundances for diversity analyses
+write.table(OTU_tab_ra_2, "outputs/OTUtab_protists_ra_filtered.csv", 
+            sep=";", row.names=FALSE, quote=FALSE)
+
+#check out table
+print(OTU_tab_ra_2) #9027  OTUS
+```
+
+* A total of 45,819 OTUs were removed from the dataset with the applied threshold?
+
+## 4.4. Rarefying dataset (optional)
+
+Another quick alternative to deal with the different sequencing effort is rarefying by the minimum number of reads using *vegan*. This normalization method is widely used and it is very handy for comparing diversity metrics between uneven samples. However, it may remove relatively rare OTUs from the dataset, which reduces richness. There are also other normalization methods (e.g., CLR - Centered log ratio), and the choice among them depends on your analysis.
+
+```{r, include=T, eval=F}
+
+#rarefy
+set.seed(123) #setting seed for reproducibility
+tOTU_tab<-t(OTU_tab[,5:ncol(OTU_tab)]) # transposing and keeping only samples; format required for vegan
+OTUs_rarefy<-rrarefy(tOTU_tab,min(rowSums(tOTU_tab))) #rarefy to the minimum sampling size = 27963 reads
+OTUs_rarefy.nozero<-OTUs_rarefy[,colSums(OTUs_rarefy) > 0] #removing rows which sum equals 0
+OTUs_r<-as.data.frame(t(OTUs_rarefy.nozero)) #it kept 55762 out of 65896 OTUs
+OTUs_r<-OTUs_r %>% rownames_to_column("amplicon")
+#merging with taxonomy
+OTUs_r<-merge(taxo_tab,OTUs_r,by="amplicon") 
+OTUs_r<-OTUs_r[order(OTUs_r$abundance,decreasing = TRUE),]
+dim(OTUs_r) #55762  1019
+
+# Write the rarefied OTU table for diversity analyses
+write.table(OTUs_r, "outputs/OTUtab-tax_protists_rarefied.csv", sep=";", row.names=FALSE, quote=FALSE)
+
+#checking 
+print(OTUs_r) #55762 OTUs left
+
+```
+
+* How many OTUs were removed from the dataset with the applied threshold?
+
+# 5. Taxonomic profiles
+
+The aim of this step is to represent the taxonomic composition of our dataset using bar plots. Since the dataset is very large, it can be very computationally consuming to generate the *phyloseq* objects that you need to plot the taxonomic profile. Thus, we are using a filtered table. Anyhow, it takes several minutes to generate these files, so  you will skip the first part of this script, and use the pre-processed *phyloseq* object that is available in the tutorial repository. However, you are encoraged to try running it yourself after the tutorial.
+
+```{r, include=T, eval=F}
+#merge the relative abundance table and the taxonomy
+otus.ra.f <- read.csv2("outputs/OTUtab-tax_protists_rarefied.csv", dec=".", header=TRUE)
+otus.ra.f <-otus.ra.f %>% filter(abundance > 1000) #filtering by abundance
+otus.ra.f<-otus.ra.f %>% remove_rownames() %>% column_to_rownames("amplicon")
+otus.tax.f<-taxo_tab[taxo_tab$amplicon %in% rownames(otus.ra.f),]
+otus.tax.f<-otus.tax.f %>% remove_rownames() %>% column_to_rownames("amplicon")
+context_2<-context %>% column_to_rownames("sample_id_pangaea")
+
+#Matching metadata with bray-curtis dist matrices
+context_2<-context_2[rownames(context_2) %in% colnames(otus.ra.f),]
+dim(context_2) #1011 22
+otus.ra.f<-otus.ra.f[,colnames(otus.ra.f) %in% rownames(context_2)]
+dim(otus.ra.f) #9027 1011
+
+#ordering
+context_2 <- context_2[order(rownames(context_2)),]
+otus.ra.f <- otus.ra.f[,order(colnames(otus.ra.f))]
+
+#checking
+identical(rownames(otus.ra.f),rownames(otus.tax.f)) #it should be TRUE
+identical(colnames(otus.ra.f),rownames(context_2)) #it should be TRUE
+
+#creating phyloseq file with the three matrices
+OTU <- otu_table(as.matrix(otus.ra.f),taxa_are_rows =TRUE)
+TAX<- tax_table(as.matrix(otus.tax.f))
+samples<-sample_data(context_2)
+physeq = phyloseq(OTU,TAX,samples)
+physeq
+
+#merge OTUs by taxonomic levels
+ps.sg <- tax_glom(physeq, "supergroup")
+
+#save phyloseq object as a RDS file
+saveRDS(ps.sg, file = "outputs/phyloseq_supegroup_tara.rds")
+
+#restore the object
+ps.sg<- readRDS(file = "outputs/phyloseq_supegroup_tara.rds")
+
+#normalization to relative abundances varying from 0 to 1
+ps.sg.1 <- transform_sample_counts(ps.sg, function(x) x / sum(x))
+
+#melt to obtain long format dataframes
+df.sg <- psmelt(ps.sg.1)
+
+saveRDS(df.sg, file = "outputs/phyloseq_supegroup_tara_ra_df.rds")
+
+#restore the object
+df.sg<- readRDS(file = "outputs/phyloseq_supegroup_tara_ra_df.rds")
+
+#You can start here in this step:
+#obtaining averages
+df.sg.2 <- df.sg %>%
+  group_by(supergroup, sizeplot, ocean_region, depthplot) %>%
+  summarise(Abundance = mean(Abundance, na.rm = TRUE))
+
+####mean abundance tables to obtain most abundant taxa
+##Subdivision
+top.sg <- df.sg.2 %>%
+  group_by(supergroup) %>%
+  summarize(Mean = mean(Abundance)) %>%
+  arrange(-Mean)
+top.sg.11 <- top.sg$supergroup[1:11]
+
+#### Creating new column with 'others' for the complete dataframe
+df.sg.2.2 <- df.sg.2 %>% 
+  mutate(ocean_region = gsub("^\\[.*?\\]\\s*(.*?)\\s*\\(MRGID:.*\\)", "\\1", ocean_region)) %>%
+  mutate(supergroup_2 = fct_other(supergroup, top.sg.11))
+
+#obtaining more colours for plotting
+nb.cols<-19
+mycolors <- colorRampPalette(brewer.pal(12, "Paired"))(nb.cols)
+
+#plotting
+pdf(paste0("outputs/plots/Taxonomy_Tara-18SV4-Swarm.pdf"), width=16, height=8)
+
+ggplot(df.sg.2.2, aes(x=depthplot, y=Abundance), width = 0.5) + 
+  facet_grid(sizeplot~ocean_region, scales='free')+
+  geom_bar(aes(color=supergroup, fill=supergroup), stat = "identity", position = "stack")+
+  scale_fill_manual(values = mycolors) +scale_color_manual(values = mycolors)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle=65, vjust=1.1,hjust=1.1))+
+  labs(y="Relative Abundance",x="",color= "",fill="")
+
+dev.off()
+
+```
+
+# 6. Diversity metrics 
+
+## 6.1.1 Computing alpha-diversity metrics
+In this step, you will use the *vegan* package to compute alpha diversity for each sample and prepare a new data frame for further analyses. I have also made this file with the diversity metrics ('context-env-div_otu-ra_tab.csv') available in the tutorial output folder
+
+```{r eval=FALSE, include=TRUE}
+library(vegan)
+#input the newly created dataset
+otus.ra <- read.csv2("outputs/OTUtab_protists_ra.csv", dec=".", header=TRUE)
+
+samples_list <- colnames(otus.ra)[grep("TARA_", colnames(otus.ra))] #obtaining samples list for calculating alpha diversity metrics
+
+#computing all alpha-diversity metrics  
+
+alpha_div <- c()
+
+for (sample in samples_list){
+  
+  abundances <- otus.ra[,sample]
+  
+  # Species richness
+  richness <- specnumber(abundances)
+
+  # Shannon index
+  shannon <- diversity(abundances,)
+  
+  # Inversed Simpson index
+  inv_simpson=diversity(abundances,index="invsimpson")
+
+  # Pielou evenness index
+  pielou=shannon/log(richness)
+  
+  alpha_div <- rbind(alpha_div, c(sample, richness, shannon, inv_simpson, pielou))
+}
+
+#including column names
+colnames(alpha_div) <- c("sample_id_pangaea","OTU_richness","Shannon","Inv_Simpson","Pielou")
+alpha_div <- data.frame(alpha_div)
+alpha_div$OTU_richness <- as.numeric(alpha_div$OTU_richness)
+alpha_div$Shannon <- as.numeric(alpha_div$Shannon)
+alpha_div$Inv_Simpson <- as.numeric(alpha_div$Inv_Simpson)
+alpha_div$Pielou <- as.numeric(alpha_div$Pielou)
+
+#merging contextual and environmental data
+context_env<-merge(context, env, by = 'sample_id_pangaea') #merging contextual and environmental data
+
+#resuming dataset
+context_env<-context_env%>% 
+  select(sample_id_pangaea,ocean_region,depth,depthplot,sizeplot,abs_lat,temperature,chla,phosphate,nitrate_nitrite,silicate) 
+
+#merging alpha-diversity metrics with contextual and environmental data
+env_div<-merge(context_env, alpha_div, by = 'sample_id_pangaea')
+
+#saving new table
+write.table(env_div, "outputs/context-env-div_otu-ra_tab.csv", sep=";", row.names=FALSE, quote=FALSE)
+
+```
+
+## 6.1.2. Visualizing and analysing the alpha-diversity metrics
+
+Here you will use the *ggplot* package (within *tidyverse*) to visualize the alpha-diversity metrics that you calculated in the previous step. Then, you will perform some basic analyses to statistically test the observed differences. 
+
+```{r eval=FALSE, include=FALSE}
+
+#input newly created dataset with alpha-diversity metrics
+env_div <- read.csv2("outputs/context-env-div_otu-ra_tab.csv", dec=".", header=TRUE)
+
+#ordering data
+env_div<-env_div %>% filter(!depthplot %in% c(NA,"","ZZZ","FSW")) %>% 
+  mutate(ocean_region = gsub("^\\[.*?\\]\\s*(.*?)\\s*\\(MRGID:.*\\)", "\\1", ocean_region)) %>%
+  mutate(depthplot=fct_relevel(depthplot,c("SRF","MIX/DCM","MES"))) %>%
+  mutate(depth=fct_relevel(depth,c("SRF","DCM","MIX","MES"))) %>%
+  mutate(sizeplot=fct_relevel(sizeplot,c("meso","micro","nano","piconano","pico"))) %>% 
+  rename("OTU richness" = OTU_richness, "Inverted Simpson" = Inv_Simpson)
+
+#transforming from wide to long format for some plots
+env_div_long<-env_div %>% 
+  gather(variable, value,-sample_id_pangaea,-ocean_region,-depth,-depthplot,-sizeplot,-abs_lat,-temperature,-chla,-phosphate,-nitrate_nitrite,-silicate)
+
+### Plot the alpha diversities 
+
+## Shannon diversity overview
+pdf(paste0("outputs/plots/Shannon_Tara-18SV4-Swarm.pdf"), width=14, height=7)
+env_div %>% ggplot(aes(x= depthplot, y=Shannon)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = depthplot),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(sizeplot~ocean_region, scales='free')+
+  theme_bw() + theme(axis.text.x = element_text(angle = 60, hjust = 1),legend.position = "none") + 
+  labs(x="Depth layer",y="Shannon Index",fill="")
+
+dev.off()
+
+## alpha-diversity metrics between depth layers
+pdf(paste0("outputs/plots/Alpha_div_Tara-Depths-18SV4-Swarm.pdf"), width=7.5, height=7)
+env_div_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(x= depthplot, y=value)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = depthplot),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(axis.text.x = element_text(angle = 60, hjust = 1),legend.position = "none",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="",y="",fill="")
+
+#dev.off()
+
+## alpha-diversity metrics between ocean basins
+pdf(paste0("outputs/plots/Alpha_div_Tara-OcBasins-18SV4-Swarm.pdf"), width=9.5, height=6.5)
+env_div_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(x=ocean_region, y=value)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = ocean_region),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(axis.text.x = element_blank(),
+                     legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="",y="",fill="")
+
+#dev.off()
+
+## alpha-diversity metrics between ocean basins
+pdf(paste0("outputs/plots/Alpha_div_Tara-Sizes-18SV4-Swarm.pdf"), width=6.5, height=7)
+
+env_div_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(x=sizeplot, y=value)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = sizeplot),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(variable~., scales='free',switch = "y")+
+  theme_bw() + theme(legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="",y="",fill="")
+
+#dev.off()
+
+## latitudinal patterns of alpha-diversity
+pdf(paste0("outputs/plots/Alpha_div_Tara-AbsLat-18SV4-Swarm.pdf"), width=8.5, height=6.5)
+
+env_div_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(y=value, x=abs_lat)) + 
+  geom_jitter(size=0.8)+
+  geom_smooth()+
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="Absolute Latitude",y="",fill="")
+
+#dev.off()
+
+## alpha-diversity along a temperature range
+pdf(paste0("outputs/plots/Alpha_div_Tara-Temp-18SV4-Swarm.pdf"), width=8.5, height=6.5)
+
+env_div_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(y=value, x=temperature)) + 
+  geom_jitter(size=0.8)+
+  geom_smooth()+
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="Temperature",y="",fill="")
+
+#dev.off()
+
+```
+
+- What are the patterns of alpha-diversity?
+
+## 6.1.3. Test whether these patterns are statistically significant 
+
+Now you are going to perform some statistical analyses to test differences in alpha-diversity between these different groups. You will perform linear models using the *stats* package to the relationship between alpha-diversity, latitude, and temperature.
+
+```{r, include=T, eval=F}
+# Use ANOVA+Tukey to test differences between groups
+
+## Size-fraction
+anova_size<-aov(data = env_div,formula = Shannon~sizeplot)
+summary(anova_size) #check results
+TukeyHSD(anova_size, conf.level=.95)
+
+## Ocean region
+env_div_pico<-env_div %>% filter(sizeplot %in% c("pico", "piconano")) #456 samples
+anova_ocean<-aov(data = env_div_pico,formula = Shannon~ocean_region)
+summary(anova_ocean) #check results
+TukeyHSD(anova_ocean, conf.level=.95)
+
+## Ocean region
+anova_depth<-aov(data = env_div_pico,formula = Shannon~depthplot)
+summary(anova_depth) #check results
+TukeyHSD(anova_depth, conf.level=.95)
+
+# Use linear models to test diversity vs. latitude (temperature) relationships
+summary(lm(env_div_pico$Shannon ~ env_div_pico$abs_lat ))
+summary(lm(env_div_pico$Shannon ~ env_div_pico$temperature ))
+
+summary(lm(env_div_pico$`OTU richness` ~ env_div_pico$abs_lat ))
+summary(lm(env_div_pico$`OTU richness` ~ env_div_pico$temperature ))
+
+```
+
+\newpage 
+# 6.2. Beta diversity
+
+In this step, you will compute beta diversity between samples and test whether samples from different oceans, depths, and size-fractions have significantly different compositions. 
+
+```{r, include=T, eval=F}
+# Open the data again
+otus.ra <- read.csv2("outputs/OTUtab_protists_ra.csv", dec=".", header=TRUE)
+#obtaining samples list for calculating alpha diversity metrics
+samples_list <- colnames(otus.ra)[grep("TARA_", colnames(otus.ra))] 
+#contextual + environmental data
+env_div <- read.csv2("outputs/context-env-div_otu-ra_tab.csv", dec=".", header=TRUE)
+
+```
+
+## 6.2.1 Compute beta diversities using Bray-Curtis distances and perform a principal coordinate analysis:
+
+Here you will compute the bray-curtis distances between samples using the *vegan* package. Next, you will perform a PCoA analyses based on these distances using the *ape* package. The PCoA is one of several types of ordination analyses that can be applied on such distance-based data such as Non Metric Multidimensional Scaling (NMDS) and Distance-Based Redundancy Analysis (dbRDA). 
+
+```{r, include=T, eval=F}
+# Compute beta diversities using Bray-Curtis distances
+
+dist_bray <- vegdist(t(otus.ra[,samples_list]), "bray") 
+
+# Perform PCoA
+
+res <- pcoa(dist_bray, correction="none", rn=NULL)
+
+origin=env_div$ocean_region[match(samples_list,env_div$sample_id_pangaea)]
+depth=env_div$depthplot[match(samples_list,env_div$sample_id_pangaea)]
+fraction=env_div$sizeplot[match(samples_list,env_div$sample_id_pangaea)]
+
+data_pcoa <- data.frame(res$vectors, origin, depth, fraction)
+
+# Plot the PCoA
+
+#pdf(paste0("outputs/plots/PCoA_bdiv_Tara-18SV4-Swarm.pdf"), width=6.5, height=5)
+
+# Colors based on origin & shape based on fraction
+data_pcoa %>% filter(origin != 'NA') %>% 
+ggplot(aes(x=Axis.1,y=Axis.2, color=origin, fill=origin,shape = fraction)) +
+  xlab(paste0("PCoA1 (", round(res$values[,3][1]*100, 1),"%)")) +
+  ylab(paste0("PCoA2 (", round(res$values[,3][2]*100, 1),"%)")) +
+  labs(title=" ")+ theme_bw() + 
+  geom_point(alpha=0.7,size=3)
+
+#dev.off()
+
+# Only picoplankton 
+env_div_pico<-env_div %>% filter(sizeplot %in% c("pico", "piconano"))
+pico_samples_list<-env_div_pico$sample_id_pangaea
+dist_bray_pico <- vegdist(t(otus.ra[,pico_samples_list]), "bray") 
+
+res_pico <- pcoa(dist_bray_pico, correction="none", rn=NULL)
+
+origin_p=env_div_pico$ocean_region[match(pico_samples_list,env_div_pico$sample_id_pangaea)]
+depth_p=env_div_pico$depth[match(pico_samples_list,env_div_pico$sample_id_pangaea)]
+fraction_p=env_div_pico$sizeplot[match(pico_samples_list,env_div_pico$sample_id_pangaea)]
+
+data_pcoa_pico <- data.frame(res_pico$vectors, origin_p, depth_p, fraction_p)
+
+# Plot the PCoA again with origing
+
+pdf(paste0("outputs/plots/PCoA_bdiv_pico_Tara-18SV4-Swarm.pdf"), width=6.5, height=4)
+
+data_pcoa_pico %>% 
+ggplot(aes(x=Axis.1,y=Axis.2, color=origin_p, fill=origin_p, shape = depth_p)) +
+  xlab(paste0("PCoA1 (", round(res$values[,3][1]*100, 1),"%)")) +
+  ylab(paste0("PCoA2 (", round(res$values[,3][2]*100, 1),"%)")) +
+  labs(title=" ")+ theme_bw() + 
+  geom_point(alpha=0.7,size=3)
+
+dev.off()
+
+```
+
+## 6.2.2 Test whether samples belonging to the same fraction, origin and depth tend to have similar composition 
+
+Finally, together with the ordination plots, it's important to report the dispersion of the beta-diversity metrics. You can do it using the *vegan* betadisper() function. You will also apply a Permutational Multivariate Analysis of Variance (PermANOVA), which is a non-parametric multivariate statistical test to compare groups using multiple factors. In our case we will test the importance of ocean and depth.
+
+```{r, include=T, eval=F}
+# Test the dispersion of the beta diversity
+mod1 <- betadisper(dist_bray, fraction)
+print(anova(mod1))
+
+mod2 <- betadisper(dist_bray_pico, origin_p) #only picoplankton
+print(anova(mod2))
+
+mod3 <- betadisper(dist_bray_pico, depth_p) #only picoplankton
+print(anova(mod3))
+
+# Perform PermANOVA (Adonis)
+
+permanova <- adonis2(dist_bray_pico ~ origin_p+depth_p, permutations=1000) #only picoplankton
+permanova
+
+```
+
+* What do these analyses reveal? Are there differences in terms of fractions, ocean region and depths?
+
+* Which factor is more strongly influencing the dispersion between ocean origin and depth?
+
+\newpage 
+## 7. Choose your favourite plankton!
+
+You are now going to reproduce the main analyses and plots, as well as performing new ones using a subset of the dataset selecting your chosen group of plankton. I have chosen diatoms as an example, but each group should choose yours. I provide some choices: 
+
+*Phytoplankton:* Green algae (Chlorophyta, Mamiellophyceae); Dinoflagellates (Dinophyceae); Coccolithophores/Haptophytes (Haptophyta); Pelagophytes (Pelagophyceae); Cryptophytes (Kathablepharidacea)
+
+*Zooplankton:* Picozoa; Radiolaria; Heterotrophic Dinoflagellates (MALV); MAST; Apusomonadida; Ciliophora, Metazoa (Arthropoda, Cnidaria, etc)
+
+Attention to *mixotrophy*!
+
+```{r, include=T, eval=F}
+#selecting your plankton of choice from the taxonomy table
+fav_tax <- subset(taxo, grepl("Diatomeae", taxo$taxogroup2)) #replace Diatomea by your group of choice. Check which column it is located
+#fav_tax <- taxo %>% filter(taxogroup2 %in% "Diatomeae") #another method of selecting your group of choice
+
+#selecting your plankton of choice from the otu table
+fav_otus<- otus[otus$amplicon %in% fav_tax$amplicon,]
+#amplicon ids as row names
+fav_otus<-fav_otus %>% remove_rownames() %>% column_to_rownames("amplicon") 
+#obtaining the list of samples
+samples_list <- colnames(fav_otus)[grep("TARA_", colnames(fav_otus))] 
+
+#checking structure and dimension
+taxo_2; fav_otus
+#counting the number OTUs and reads left in the table
+nrow(fav_tax) # n of unclassified OTUs
+nrow(fav_tax)/nrow(taxo_tab)*100 # % of OTUs
+sum(fav_tax$abundance) # n of reads
+sum(fav_tax$abundance)/sum(taxo_tab$abundance)*100 # % of reads
+
+# Saving the OTU table of your plankton group for diversity analyses
+write.table(fav_otus, "outputs/OTUtab-tax_fav-group.csv", sep=";", row.names=FALSE, quote=FALSE)
+
+```
+
+* How many OTUs belong to your chosen plankton group? And how many reads?
+
+For diatoms we have now a table with 1,759 OTUs (3.2% of protists), and 21,809,991 reads (6.2% of protists).
+
+
+##7.1.1 Computing alpha-diversity metrics
+
+You are now ready for analyzing you group of interest. First, you will compute again alpha diversity for each sample and prepare a new data frame for further analyses with your group.
+
+```{r eval=FALSE, include=TRUE}
+library(vegan)
+#input the newly created dataset
+fav_otus <- read.csv2("outputs/OTUtab-tax_fav-group.csv", dec=".", header=TRUE)
+
+samples_list <- colnames(fav_otus)[grep("TARA_", colnames(fav_otus))] #obtaining samples list for calculating alpha diversity metrics
+
+#computing all alpha-diversity metrics  
+
+alpha_div <- c()
+
+for (sample in samples_list){
+  
+  abundances <- fav_otus[,sample]
+  
+  # Species richness
+  richness <- specnumber(abundances)
+
+  # Shannon index
+  shannon <- diversity(abundances,)
+  
+  # Inversed Simpson index
+  inv_simpson=diversity(abundances,index="invsimpson")
+
+  # Pielou evenness index
+  pielou=shannon/log(richness)
+  
+  alpha_div <- rbind(alpha_div, c(sample, richness, shannon, inv_simpson, pielou))
+}
+
+#including column names
+colnames(alpha_div) <- c("sample_id_pangaea","OTU_richness","Shannon","Inv_Simpson","Pielou")
+alpha_div <- data.frame(alpha_div)
+alpha_div$OTU_richness <- as.numeric(alpha_div$OTU_richness)
+alpha_div$Shannon <- as.numeric(alpha_div$Shannon)
+alpha_div$Inv_Simpson <- as.numeric(alpha_div$Inv_Simpson)
+alpha_div$Pielou <- as.numeric(alpha_div$Pielou)
+
+#merging contextual and environmental data
+context_env<-merge(context, env, by = 'sample_id_pangaea') #merging contextual and environmental data
+
+#resuming dataset
+context_env<-context_env%>% 
+  select(sample_id_pangaea,ocean_region,depth,depthplot,sizeplot,abs_lat,temperature,chla,phosphate,nitrate_nitrite,silicate) 
+
+#merging alpha-diversity metrics with contextual and environmental data
+env_div<-merge(context_env, alpha_div, by = 'sample_id_pangaea')
+
+#saving new table
+write.table(env_div, "outputs/context-env-div_otu-ra_tab_fav-group.csv", sep=";", row.names=FALSE, quote=FALSE)
+
+```
+
+## 7.1.2. Visualizing and analysing the alpha-diversity metrics
+
+Here you will use the *ggplot* package (within *tidyverse*) to visualize the alpha-diversity metrics that you calculated in the previous step. Then, you will perform some basic analyses to statistically test the observed differences. 
+
+```{r eval=FALSE, include=FALSE}
+
+#input newly created dataset with alpha-diversity metrics
+env_div_fav <- read.csv2("outputs/context-env-div_otu-ra_tab_fav-group.csv", dec=".", header=TRUE)
+
+#ordering data
+env_div_fav<-env_div_fav %>% filter(!depthplot %in% c(NA,"","ZZZ","FSW")) %>% 
+  mutate(ocean_region = gsub("^\\[.*?\\]\\s*(.*?)\\s*\\(MRGID:.*\\)", "\\1", ocean_region)) %>%
+  mutate(depthplot=fct_relevel(depthplot,c("SRF","MIX/DCM","MES"))) %>%
+  mutate(depth=fct_relevel(depth,c("SRF","DCM","MIX","MES"))) %>%
+  mutate(sizeplot=fct_relevel(sizeplot,c("meso","micro","nano","piconano","pico"))) %>% 
+  rename("OTU richness" = OTU_richness, "Inverted Simpson" = Inv_Simpson)
+
+#transforming from wide to long format for some plots
+env_div_fav_long<-env_div_fav %>% 
+  gather(variable, value,-sample_id_pangaea,-ocean_region,-depth,-depthplot,-sizeplot,-abs_lat,-temperature,-chla,-phosphate,-nitrate_nitrite,-silicate)
+
+### Plot the alpha diversity
+
+## alpha-diversity metrics between depth layers
+pdf(paste0("outputs/plots/Diatoms_Alpha_div_Tara-Depths-18SV4-Swarm.pdf"), width=7.5, height=7)
+env_div_fav_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(x= depthplot, y=value)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = depthplot),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(axis.text.x = element_text(angle = 60, hjust = 1),legend.position = "none",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="",y="",fill="")
+
+dev.off()
+
+## alpha-diversity metrics between ocean basins
+pdf(paste0("outputs/plots/Diatoms_Alpha_div_Tara-OcBasins-18SV4-Swarm.pdf"), width=9.5, height=6.5)
+env_div_fav_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(x=ocean_region, y=value)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = ocean_region),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(axis.text.x = element_blank(),
+                     legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="",y="",fill="")
+
+dev.off()
+
+## alpha-diversity metrics between fractions
+pdf(paste0("outputs/plots/Diatoms_Alpha_div_Tara-Sizes-18SV4-Swarm.pdf"), width=6.5, height=7)
+
+env_div_fav_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(x=sizeplot, y=value)) + 
+  geom_jitter(size=0.8)+
+  geom_boxplot(aes(fill = sizeplot),alpha = 0.8,outliers = FALSE) + 
+  facet_grid(variable~., scales='free',switch = "y")+
+  theme_bw() + theme(legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="",y="",fill="")
+
+dev.off()
+
+## latitudinal patterns of alpha-diversity
+pdf(paste0("outputs/plots/Diatoms_Alpha_div_Tara-AbsLat-18SV4-Swarm.pdf"), width=8.5, height=6.5)
+
+env_div_fav_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(y=value, x=abs_lat)) + 
+  geom_jitter(size=0.8)+
+  geom_smooth()+
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="Absolute Latitude",y="",fill="")
+
+dev.off()
+
+## alpha-diversity along a temperature range
+pdf(paste0("outputs/plots/Diatoms_Alpha_div_Tara-Temp-18SV4-Swarm.pdf"), width=8.5, height=6.5)
+
+env_div_fav_long %>% 
+  filter(variable== c("OTU richness", "Shannon", "Inverted Simpson", "Pielou")) %>%
+  mutate(variable=fct_relevel(variable,c("OTU richness","Shannon","Inverted Simpson","Pielou"))) %>%
+  ggplot(aes(y=value, x=temperature)) + 
+  geom_jitter(size=0.8)+
+  geom_smooth()+
+  facet_grid(variable~sizeplot, scales='free',switch = "y")+
+  theme_bw() + theme(legend.position = "right",
+                     strip.text = element_text(face="bold"),
+                     strip.background = element_blank(),
+                     strip.placement = "outside") + 
+  labs(x="Temperature",y="",fill="")
+
+dev.off()
+
+```
+
+* What are the patterns of alpha-diversity for your group of choice?
+
+## 7.1.3. Test whether these patterns are statistically significant 
+
+Now you are going to perform some statistical analyses to test differences in alpha-diversity between these different groups. You will perform linear models using the *stats* package to the relationship between alpha-diversity, latitude, and temperature.
+
+```{r, include=T, eval=F}
+# Use ANOVA+Tukey to test differences between groups
+
+## Size-fraction
+anova_size<-aov(data = env_div_fav,formula = Shannon~sizeplot)
+summary(anova_size) #check results
+TukeyHSD(anova_size, conf.level=.95)
+
+## Ocean region
+env_div_fraction<-env_div %>% filter(sizeplot %in% c("micro")) #choose the size-fraction more representative for your group
+anova_ocean<-aov(data = env_div_fraction,formula = Shannon~ocean_region)
+summary(anova_ocean) #check results
+TukeyHSD(anova_ocean, conf.level=.95)
+
+## Ocean region
+anova_depth<-aov(data = env_div_fraction,formula = Shannon~depthplot)
+summary(anova_depth) #check results
+TukeyHSD(anova_depth, conf.level=.95)
+
+# Use linear models to test diversity vs. latitude (temperature) relationships
+summary(lm(env_div_fraction$Shannon ~ env_div_fraction$abs_lat ))
+summary(lm(env_div_fraction$Shannon ~ env_div_fraction$temperature ))
+
+summary(lm(env_div_fraction$`OTU richness` ~ env_div_fraction$abs_lat ))
+summary(lm(env_div_fraction$`OTU richness` ~ env_div_fraction$temperature ))
+
+```
+
+## 7.1.4. Plot alpha-diversity of your group on a map
+
+You may be interested in observing how the relative abundance and alpha-diversity of your favorite group is geographically distributed. Here you will try something new in comparison with the first part of this tutorial. Let's check it out!
+
+```{r, include=T, eval=F}
+
+#merging with contextual data which contains coordinates
+context_map<-context %>% select(sample_id_pangaea,event_latitude,event_longitude)
+div_map_data<-merge(env_div_fraction, context_map, by = 'sample_id_pangaea')
+
+#loading world map
+world <- map_data("world") 
+
+#plotting diversity on a map
+pdf(paste0("outputs/plots/Diatoms_Div_Map_Tara-18SV4-Swarm.pdf"), width=8.5, height=6.5)
+
+div_map_data %>% 
+  #filter(depthplot=="SRF") %>% #select one single depth if you want
+  ggplot() +
+  geom_polygon(data = world, aes(x=long, y = lat, group = group), fill="darkgrey", alpha=1) +
+  coord_fixed(1.1) + #to make the map more proportional
+  geom_point(data=div_map_data, aes(x=event_longitude, y= event_latitude, size= Shannon, color=Shannon),alpha=0.7) +
+  theme_minimal()+ 
+  facet_grid(depthplot~.)+
+  labs(title = "Diatoms Diversity",
+       x = "Longitude",
+       y = "Latitude",
+       size = "Shannon")
+
+
+dev.off()
+
+```
+
+* What have you observed? 
+
+## 7.1.5. Build and plot a correlation matrix 
+
+Correlation matrices are very useful for observing correlations among many variables at the same time. Here you will compute a spearman correlation matrix using the cor() function of the *stats* package. Then you will observe the correlation between your alpha-diversity metrics and the environmental variables. This step helps to select the most important variables for further analyses.
+
+```{r, include=F, eval=F}
+#selecting only numeric variables for correlation matrix
+div_cor<-env_div_fraction %>% select(where(is.numeric))
+
+#generating correlation matrix
+m_cor <- cor(div_cor,method="spearman",use="pairwise.complete.obs") #replace Nas with mean values
+head(round(m_cor,2)) #to check values
+
+#Correlation significance (p values)
+p_cor <- cor_pmat(div_cor,method="spearman")
+head(p_cor[, 1:5]) #to check values
+
+#ploting correlation matrix
+pdf(paste0("outputs/plots/Diatoms_Alpha_div_Tara-Temp-18SV4-Swarm.pdf"), width=8.5, height=6.5)
+
+ggcorrplot(m_cor,method="square",lab=TRUE,lab_size=3,type = 'upper',p.mat=p_cor,
+                  insig="blank",colors = c('red','white','blue'),legend.title = "",title = "Diatoms Diversity") + theme_minimal()+labs(x="",y="")
+
+dev.off()
+
+```
+
+# 7.2. Beta diversity of your plankton
+
+In this step, you will compute beta diversity between samples and test whether samples from different oceans, depths, and size-fractions have significantly different compositions. 
+
+```{r, include=T, eval=F}
+# Open the data again
+otus.ra <- read.csv2("outputs/OTUtab_protists_ra.csv", dec=".", header=TRUE)
+#obtaining samples list for calculating alpha diversity metrics
+samples_list <- colnames(otus.ra)[grep("TARA_", colnames(otus.ra))] 
+#contextual + environmental data
+env_div <- read.csv2("outputs/context-env-div_otu-ra_tab.csv", dec=".", header=TRUE)
+
+```
+
+## 7.2.1 Compute beta diversities using Bray-Curtis distances and perform a principal coordinate analysis:
+
+Here you will compute the bray-curtis distances between samples using the *vegan* package. Next, you will perform a PCoA analyses based on these distances using the *ape* package. The PCoA is one of several types of ordination analyses that can be applied on such distance-based data such as Non Metric Multidimensional Scaling (NMDS) and Distance-Based Redundancy Analysis (dbRDA). 
+
+```{r, include=T, eval=F}
+# Compute beta diversities using Bray-Curtis distances
+
+dist_bray_fav <- vegdist(t(fav_otus[,samples_list]), "bray") 
+
+# Perform PCoA
+
+res_fav <- pcoa(dist_bray_fav, correction="none", rn=NULL)
+
+origin=env_div$ocean_region[match(samples_list,env_div$sample_id_pangaea)]
+depth=env_div$depthplot[match(samples_list,env_div$sample_id_pangaea)]
+fraction=env_div$sizeplot[match(samples_list,env_div$sample_id_pangaea)]
+
+data_pcoa_fav <- data.frame(res_fav$vectors, origin, depth, fraction)
+
+# Plot the PCoA
+
+#pdf(paste0("outputs/plots/PCoA_bdiv_Tara-18SV4-Swarm.pdf"), width=6.5, height=5)
+
+# Colors based on origin & shape based on fraction
+data_pcoa_fav %>% filter(origin != 'NA') %>% 
+ggplot(aes(x=Axis.1,y=Axis.2, color=origin, fill=origin,shape = fraction)) +
+  xlab(paste0("PCoA1 (", round(res$values[,3][1]*100, 1),"%)")) +
+  ylab(paste0("PCoA2 (", round(res$values[,3][2]*100, 1),"%)")) +
+  labs(title=" ")+ theme_bw() + 
+  geom_point(alpha=0.7,size=3)
+
+#dev.off()
+
+# Only picoplankton 
+env_div_micro<-env_div %>% filter(sizeplot %in% c("micro")) #choose the fraction of interest
+micro_samples_list<-env_div_micro$sample_id_pangaea
+dist_bray_micro <- vegdist(t(otus.ra[,micro_samples_list]), "bray") 
+
+res_fav_micro <- pcoa(dist_bray_micro, correction="none", rn=NULL)
+
+origin_f=env_div_micro$ocean_region[match(micro_samples_list,env_div_micro$sample_id_pangaea)]
+depth_f=env_div_micro$depth[match(micro_samples_list,env_div_micro$sample_id_pangaea)]
+fraction_f=env_div_micro$sizeplot[match(micro_samples_list,env_div_micro$sample_id_pangaea)]
+
+data_pcoa_fav_micro <- data.frame(res_fav_micro$vectors, origin_f, depth_f, fraction_f)
+
+# Plot the PCoA again with origing
+
+pdf(paste0("outputs/plots/Diatoms_PCoA_bdiv_pico_Tara-18SV4-Swarm.pdf"), width=6.5, height=4)
+
+data_pcoa_fav_micro %>% 
+ggplot(aes(x=Axis.1,y=Axis.2, color=origin_f, fill=origin_f, shape = depth_f)) +
+  xlab(paste0("PCoA1 (", round(res$values[,3][1]*100, 1),"%)")) +
+  ylab(paste0("PCoA2 (", round(res$values[,3][2]*100, 1),"%)")) +
+  labs(title=" ")+ theme_bw() + 
+  geom_point(alpha=0.7,size=3)
+
+dev.off()
+
+```
+
+## 7.2.2 Test whether samples belonging to the same fraction, origin and depth tend to have similar composition 
+
+Finally, together with the ordination plots, it's important to report the dispersion of the beta-diversity metrics. You can do it using the *vegan* betadisper() function. You will also apply a Permutational Multivariate Analysis of Variance (PermANOVA), which is a non-parametric multivariate statistical test to compare groups using multiple factors. In our case we will test the importance of ocean and depth.
+
+```{r, include=T, eval=F}
+# Test the dispersion of the beta diversity
+mod1 <- betadisper(dist_bray_fav, fraction)
+print(anova(mod1))
+
+mod2 <- betadisper(dist_bray_micro, origin_f) #only picoplankton
+print(anova(mod2))
+
+mod3 <- betadisper(dist_bray_micro, depth_f) #only picoplankton
+print(anova(mod3))
+
+# Perform PermANOVA (Adonis)
+
+permanova <- adonis2(dist_bray_micro ~ origin_f+depth_f, permutations=1000) #only picoplankton
+permanova
+
+```
+
+* What do these analyses reveal? Are there differences in terms of fractions, ocean region and depths?
+
+* What is the strongest factor: ocean origin or depth?
+
