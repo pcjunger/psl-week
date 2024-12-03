@@ -1,8 +1,7 @@
 # Marine Ecology & Biodiversity
-Responsible for the unit: Mathilde Scheifler (mathilde.scheifler@bio.ens.psl.eu)
 
 ## Practicals: exploring planktonic communities in the *Tara Oceans*
-Instructor: Pedro C. Junger (pjunger@bio.ens.psl.eu)
+Instructor: Pedro C. Junger
 
 ## This repo includes:
 This repo contains the R Markdown script and the outputs for the practical session of the Marine Ecology & Biodiversity course as part of the PSL-Week. The aim of this tutorial is providing the students a toolbox to explore the *Tara Oceans* datasets to study plankton diversity in the global ocean. The example dataset is the *Tara Oceans* 18SV4 data processed by the swarm pipeline, but the current script should be easily adaptable to other datasets.
